@@ -1,0 +1,1119 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Česká Vesnice: RPG Survival Building</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: Arial;
+            font-size: 14px;
+            background: rgba(0,0,0,0.7);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        #controls {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: white;
+            font-family: Arial;
+            font-size: 12px;
+            background: rgba(0,0,0,0.7);
+            padding: 10px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <h3>Česká Vesnice - Test Verze</h3>
+        <p>Rok: 1142 | Hráč: Jindřich z Lipé</p>
+        <p>Health: <span id="health">100</span>%</p>
+        <p>Position: <span id="position">0, 0, 0</span></p>
+    </div>
+    
+    <div id="controls">
+        <p><strong>Vylepšené ovládání:</strong></p>
+        <p>WASD - Pohyb (chůze/běh)</p>
+        <p>Shift - Běh (rychlejší pohyb)</p>
+        <p>Myš - Rotace kamery</p>
+        <p>Space - Skok</p>
+        <p>E - Interakce s NPC</p>
+        <p>R - Přepnout běh/chůzi</p>
+        <p>B - Stavění</p>
+        <p>I - Inventář</p>
+        <p><strong>Animace:</strong></p>
+        <p>• Plynulý pohyb rukou a nohama</p>
+        <p>• Rotace podle směru pohybu</p>
+        <p>• 3D modely s animacemi</p>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    
+    <script>
+        // ZÁKLADNÍ THREE.JS SCÉNA
+        let scene, camera, renderer;
+        
+        // TPS kamera systém
+        let cameraController = {
+            distance: 10,        // Vzdálenost od hráče
+            height: 8,          // Výška kamery
+            angle: 0,          // Horizontální úhel
+            verticalAngle: 0,    // Vertikální úhel
+            targetHeight: 2,     // Cílová výška na hráči
+            smoothSpeed: 0.1,    // Rychlost plynulosti
+            minDistance: 5,      // Minimální vzdálenost
+            maxDistance: 25,     // Maximální vzdálenost
+            zoomSpeed: 0.5       // Rychlost zoomu
+        };
+        
+        // Globální proměnné pro ovládání
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+        let isRunning = false;
+        let canJump = true;
+        let isMoving = false;
+        let velocity = new THREE.Vector3();
+        let direction = new THREE.Vector3();
+        let targetRotation = 0;
+        let playerRotation = 0;
+        let player;
+        let prevTime = performance.now();
+        let playerModel = null;
+        let animationMixer = null;
+        let mouseMovementX = 0;
+        let mouseMovementY = 0;
+        
+        // TPS kamera funkce
+        function updateCameraOrbit() {
+            // Horizontální otáčení kolem hráče
+            cameraController.angle -= mouseMovementX * 0.002;
+            
+            // Vertikální náklon s limity
+            cameraController.verticalAngle = Math.max(
+                -Math.PI/3, 
+                Math.min(Math.PI/6, cameraController.verticalAngle - mouseMovementY * 0.002)
+            );
+            
+            // Výpočet pozice kamery s limity zoomu
+            const cameraX = player.position.x + 
+                Math.sin(cameraController.angle) * cameraController.distance;
+            const cameraZ = player.position.z + 
+                Math.cos(cameraController.angle) * cameraController.distance;
+            const cameraY = player.position.y + cameraController.height;
+            
+            // Plynulý přechod na novou pozici
+            const targetPosition = new THREE.Vector3(cameraX, cameraY, cameraZ);
+            camera.position.lerp(targetPosition, cameraController.smoothSpeed);
+            
+            // Kamera se dívá na hráče (s offsetem výšky)
+            camera.lookAt(
+                player.position.x, 
+                player.position.y + cameraController.targetHeight, 
+                player.position.z
+            );
+        }
+        
+        // Funkce pro zoom kamery
+        function updateCameraZoom(delta) {
+            const zoomAmount = delta * cameraController.zoomSpeed;
+            const newDistance = cameraController.distance - zoomAmount;
+            
+            // Aplikovat limity zoomu
+            cameraController.distance = Math.max(
+                cameraController.minDistance,
+                Math.min(cameraController.maxDistance, newDistance)
+            );
+            
+            console.log(`🔍 Zoom: Vzdálenost = ${cameraController.distance.toFixed(1)} (min: ${cameraController.minDistance}, max: ${cameraController.maxDistance})`);
+        }
+        
+        function getPlayerMovementDirection() {
+            // Směr pohybu podle kamery
+            const forward = new THREE.Vector3(
+                Math.sin(cameraController.angle),
+                0,
+                Math.cos(cameraController.angle)
+            );
+            
+            const right = new THREE.Vector3(
+                Math.cos(cameraController.angle),
+                0,
+                -Math.sin(cameraController.angle)
+            );
+            
+            return { forward, right };
+        }
+        
+        function updatePlayerRotation() {
+            if (isMoving) {
+                // Hrdina se otáčí podle směru pohybu
+                const moveDirection = new THREE.Vector3(
+                    Number(moveRight) - Number(moveLeft),
+                    0,
+                    Number(moveForward) - Number(moveBackward)
+                ).normalize();
+                
+                // Výpočet úhlu rotace
+                targetRotation = Math.atan2(moveDirection.x, moveDirection.z);
+            }
+            
+            // Plynulá rotace hráče
+            player.rotation.y += (targetRotation - player.rotation.y) * 0.15;
+        }
+        function init() {
+            console.log('🚀 Starting game initialization...');
+            
+            // SCÉNA
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            console.log('✅ Scene created with background:', scene.background.getHexString());
+            
+            // KAMERA
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 1000);
+            camera.position.set(0, 5, 10);
+            console.log('✅ Camera created at position:', camera.position.x, camera.position.y, camera.position.z);
+            
+            // RENDERER - VYŘEŠENÍ ČERNÉ OBRAZOVKY
+            renderer = new THREE.WebGLRenderer({ 
+                antialias: true,
+                alpha: false,
+                preserveDrawingBuffer: false
+            });
+            
+            // Nastavit renderer
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Omezení pixel ratio
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.setClearColor(0x87CEEB, 1);
+            
+            // Přidat canvas do DOM
+            document.body.appendChild(renderer.domElement);
+            console.log('✅ Renderer created and added to DOM');
+            
+            // Test rendereru
+            try {
+                renderer.render(scene, camera);
+                console.log('✅ Initial render test successful');
+            } catch (error) {
+                console.error('❌ Initial render test failed:', error);
+            }
+            
+            // OSVĚTLENÍ
+            const ambientLight = new THREE.AmbientLight(0xffffff, 1.0); // Maximální jasnost
+            scene.add(ambientLight);
+            console.log('✅ Ambient light added with intensity 1.0');
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+            directionalLight.position.set(10, 20, 5);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.camera.left = -20;
+            directionalLight.shadow.camera.right = 20;
+            directionalLight.shadow.camera.top = 20;
+            directionalLight.shadow.camera.bottom = -20;
+            scene.add(directionalLight);
+            console.log('✅ Directional light added');
+            
+            // TESTOVACÍ OBJEKTY - PRO JISTOTU VIDITELNOSTI
+            addTestObjects();
+            
+            // TERÉN
+            const terrainGeometry = new THREE.PlaneGeometry(100, 100);
+            const terrainMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0x00FF00, // Jasně zelená
+                side: THREE.DoubleSide
+            });
+            const terrain = new THREE.Mesh(terrainGeometry, terrainMaterial);
+            terrain.rotation.x = -Math.PI / 2;
+            terrain.receiveShadow = true;
+            scene.add(terrain);
+            console.log('✅ Bright green terrain created');
+            
+            // HRDINA
+            createPlayer();
+            
+            // STROMY
+            for (let i = 0; i < 20; i++) {
+                createTree(
+                    (Math.random() - 0.5) * 50,
+                    (Math.random() - 0.5) * 50
+                );
+            }
+            
+            // BUDOVY
+            createBuildings();
+            
+            // NPC
+            createNPCs();
+            
+            // KONTROLY
+            setupControls();
+            
+            // DEBUG INFO
+            console.log('🎬 Scene contains', scene.children.length, 'objects');
+            scene.children.forEach((child, index) => {
+                console.log(`  ${index}: ${child.type} at (${child.position.x.toFixed(1)}, ${child.position.y.toFixed(1)}, ${child.position.z.toFixed(1)})`);
+            });
+            
+            // START GAME LOOP
+            animate();
+            
+            console.log('✅ Game initialized successfully!');
+        }
+        
+        function addTestObjects() {
+            // OBROVSKÁ ČERVENÁ KOSTKA - TEST
+            const testGeometry = new THREE.BoxGeometry(5, 5, 5);
+            const testMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0xFF0000,
+                side: THREE.DoubleSide
+            });
+            const testCube = new THREE.Mesh(testGeometry, testMaterial);
+            testCube.position.set(0, 3, 0);
+            scene.add(testCube);
+            console.log('✅ GIANT RED TEST CUBE added at (0, 3, 0)');
+            
+            // OBROVSKÁ BÍLÁ KOULE - TEST
+            const sphereGeometry = new THREE.SphereGeometry(3, 16, 16);
+            const sphereMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0xFFFFFF,
+                side: THREE.DoubleSide
+            });
+            const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+            sphere.position.set(10, 3, 0);
+            scene.add(sphere);
+            console.log('✅ GIANT WHITE SPHERE added at (10, 3, 0)');
+            
+            // OBROVSKÁ MODRÁ KOULE - TEST
+            const blueSphereGeometry = new THREE.SphereGeometry(2, 16, 16);
+            const blueSphereMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0x0000FF,
+                side: THREE.DoubleSide
+            });
+            const blueSphere = new THREE.Mesh(blueSphereGeometry, blueSphereMaterial);
+            blueSphere.position.set(-10, 2, 0);
+            scene.add(blueSphere);
+            console.log('✅ GIANT BLUE SPHERE added at (-10, 2, 0)');
+        }
+        
+        function createPlayer() {
+            console.log('👤 Creating player with 3D models and animations...');
+            
+            // Seznam dostupných hrdinských modelů s prioritou
+            const heroModels = [
+                { name: 'Hero.glb', file: 'Hero.glb', priority: 1 },
+                { name: 'Adventurer.glb', file: 'Adventurer.glb', priority: 2 },
+                { name: 'Knight.glb', file: 'Knight.glb', priority: 3 },
+                { name: 'Enemy-knight.glb', file: 'Enemy-knight.glb', priority: 4 },
+                { name: 'Man_NPC.glb', file: 'Man_NPC.glb', priority: 5 }
+            ];
+            
+            // Seřadit modely podle priority
+            heroModels.sort((a, b) => a.priority - b.priority);
+            
+            // Pokusit načíst modely v pořadí priority
+            loadHeroModel(heroModels, 0);
+        }
+        
+        function loadHeroModel(models, index) {
+            if (index >= models.length) {
+                console.warn('❌ All hero models failed, using fallback');
+                createFallbackPlayer();
+                return;
+            }
+            
+            const model = models[index];
+            console.log(`🎯 Trying to load ${model.name} (${index + 1}/${models.length})`);
+            
+            const loader = new THREE.GLTFLoader();
+            
+            loader.load(
+                model.file,
+                (gltf) => {
+                    console.log(`✅ ${model.name} loaded successfully!`);
+                    console.log(`📊 Model info:`, {
+                        animations: gltf.animations.length,
+                        scenes: gltf.scenes.length,
+                        nodes: gltf.scene.children.length
+                    });
+                    
+                    const hero = gltf.scene;
+                    hero.scale.set(1, 1, 1);
+                    
+                    // Centrovat model
+                    const box = new THREE.Box3().setFromObject(hero);
+                    const center = box.getCenter(new THREE.Vector3());
+                    const size = box.getSize(new THREE.Vector3());
+                    hero.position.sub(center);
+                    hero.position.y = 1; // Postavit na zem
+                    
+                    // Přizpůsobit velikost podle modelu
+                    const maxDimension = Math.max(size.x, size.y, size.z);
+                    if (maxDimension > 3) {
+                        const scale = 3 / maxDimension;
+                        hero.scale.multiplyScalar(scale);
+                        console.log(`📏 Scaled model by ${scale.toFixed(2)}`);
+                    }
+                    
+                    // Nastavit shadow pro všechny mesh
+                    hero.traverse((child) => {
+                        if (child.isMesh) {
+                            child.castShadow = true;
+                            child.receiveShadow = true;
+                            console.log(`🎨 Mesh: ${child.name || 'unnamed'} with ${child.geometry.attributes.position ? child.geometry.attributes.position.count : 0} vertices`);
+                        }
+                    });
+                    
+                    // Uložit reference pro animace
+                    playerModel = hero;
+                    player = hero;
+                    scene.add(player);
+                    
+                    // Vytvořit animation mixer a nastavit animace
+                    setupAnimations(gltf, model.name);
+                    
+                    console.log(`✅ 3D Hero model ${model.name} added to scene!`);
+                },
+                (progress) => {
+                    const percent = Math.round((progress.loaded / progress.total) * 100);
+                    console.log(`📥 Loading ${model.name}: ${percent}%`);
+                },
+                (error) => {
+                    console.warn(`❌ Failed to load ${model.name}:`, error);
+                    // Zkusit další model
+                    loadHeroModel(models, index + 1);
+                }
+            );
+        }
+        
+        function setupAnimations(gltf, modelName) {
+            console.log(`🎬 Setting up animations for ${modelName}`);
+            
+            if (gltf.animations && gltf.animations.length > 0) {
+                animationMixer = new THREE.AnimationMixer(playerModel);
+                console.log(`✅ Animation mixer created with ${gltf.animations.length} animations`);
+                
+                // Log všechny animace
+                gltf.animations.forEach((clip, index) => {
+                    console.log(`🎞️ Animation ${index + 1}: "${clip.name}" (${clip.duration.toFixed(2)}s)`);
+                });
+                
+                // Najít a přehrát idle animaci
+                const idleAnim = gltf.animations.find(anim => 
+                    anim.name.toLowerCase().includes('idle') || 
+                    anim.name.toLowerCase().includes('stand') ||
+                    anim.name.toLowerCase().includes('rest')
+                );
+                
+                if (idleAnim) {
+                    const action = animationMixer.clipAction(idleAnim);
+                    action.play();
+                    console.log(`✅ Playing idle animation: "${idleAnim.name}"`);
+                } else {
+                    // Pokud není idle, přehrát první animaci
+                    const firstAnim = gltf.animations[0];
+                    const action = animationMixer.clipAction(firstAnim);
+                    action.play();
+                    console.log(`⚠️ No idle found, playing: "${firstAnim.name}"`);
+                }
+                
+                // Uložit animace pro pozdější použití
+                playerModel.userData.animations = gltf.animations;
+                playerModel.userData.animationMixer = animationMixer;
+                
+            } else {
+                console.warn(`⚠️ No animations found in ${modelName}`);
+            }
+        }
+        
+        function updatePlayerAnimation(state) {
+            if (!playerModel || !playerModel.userData.animations) return;
+            
+            const animations = playerModel.userData.animations;
+            const mixer = playerModel.userData.animationMixer;
+            
+            if (!mixer) return;
+            
+            // Najít animaci podle stavu
+            let targetAnimation = null;
+            
+            switch (state) {
+                case 'idle':
+                    targetAnimation = animations.find(anim => 
+                        anim.name.toLowerCase().includes('idle') || 
+                        anim.name.toLowerCase().includes('stand')
+                    );
+                    break;
+                case 'walking':
+                    targetAnimation = animations.find(anim => 
+                        anim.name.toLowerCase().includes('walk') ||
+                        anim.name.toLowerCase().includes('run')
+                    );
+                    break;
+                case 'running':
+                    targetAnimation = animations.find(anim => 
+                        anim.name.toLowerCase().includes('run') ||
+                        anim.name.toLowerCase().includes('sprint')
+                    );
+                    break;
+                case 'jumping':
+                    targetAnimation = animations.find(anim => 
+                        anim.name.toLowerCase().includes('jump') ||
+                        anim.name.toLowerCase().includes('leap')
+                    );
+                    break;
+            }
+            
+            // Pokud jsme našli cílovou animaci, přehrát ji
+            if (targetAnimation) {
+                const currentAction = mixer.clipAction(targetAnimation);
+                if (!currentAction.isRunning()) {
+                    mixer.stopAllAction();
+                    currentAction.play();
+                    console.log(`🎬 Playing animation: "${targetAnimation.name}" for state: ${state}`);
+                }
+            }
+        }
+        
+        function createFallbackPlayer() {
+            console.log('👤 Creating fallback player with professional animation system...');
+            
+            // Hlavní tělo hráče
+            const bodyGeometry = new THREE.BoxGeometry(2, 3, 2);
+            const bodyMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0xFF0000,
+                side: THREE.DoubleSide
+            });
+            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+            body.position.y = 1.5;
+            body.castShadow = true;
+            
+            // Hlava
+            const headGeometry = new THREE.SphereGeometry(1, 16, 16);
+            const headMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0x00FF00,
+                side: THREE.DoubleSide
+            });
+            const head = new THREE.Mesh(headGeometry, headMaterial);
+            head.position.y = 3.5;
+            head.castShadow = true;
+            
+            // Profesionální ruce s detailní animací
+            const armGeometry = new THREE.CylinderGeometry(0.3, 0.25, 2.5, 12);
+            const armMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0x0000FF,
+                side: THREE.DoubleSide
+            });
+            
+            const leftArm = new THREE.Mesh(armGeometry, armMaterial);
+            leftArm.position.set(-1.2, 2.2, 0);
+            leftArm.castShadow = true;
+            
+            const rightArm = new THREE.Mesh(armGeometry, armMaterial);
+            rightArm.position.set(1.2, 2.2, 0);
+            rightArm.castShadow = true;
+            
+            // Profesionální nohy s detailní animací
+            const legGeometry = new THREE.CylinderGeometry(0.35, 0.3, 2.8, 12);
+            const legMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0xFFFF00,
+                side: THREE.DoubleSide
+            });
+            
+            const leftLeg = new THREE.Mesh(legGeometry, legMaterial);
+            leftLeg.position.set(-0.6, -1.4, 0);
+            leftLeg.castShadow = true;
+            
+            const rightLeg = new THREE.Mesh(legGeometry, legMaterial);
+            rightLeg.position.set(0.6, -1.4, 0);
+            rightLeg.castShadow = true;
+            
+            // Vytvořit group pro hráče
+            player = new THREE.Group();
+            player.add(body);
+            player.add(head);
+            player.add(leftArm);
+            player.add(rightArm);
+            player.add(leftLeg);
+            player.add(rightLeg);
+            
+            // Uložit reference pro profesionální animace
+            playerModel = player;
+            playerModel.userData = {
+                body: body,
+                head: head,
+                leftArm: leftArm,
+                rightArm: rightArm,
+                leftLeg: leftLeg,
+                rightLeg: rightLeg,
+                // Profesionální animace parametry
+                animationState: 'idle', // idle, walking, running, jumping
+                walkCycle: 0,
+                runCycle: 0,
+                jumpPhase: 0,
+                armSwingAmplitude: 0.8, // Amplituda mávání rukama
+                legSwingAmplitude: 0.6, // Amplituda pohybu nohou
+                bodyBobAmount: 0.1, // Pohyb těla nahoru/dolů
+                armBendAmount: 0.4, // Ohýbání loktů
+                legBendAmount: 0.3, // Ohýbání kolen
+                sideLeanAmount: 0.2 // Naklánění do stran
+            };
+            
+            // Pozice hráče
+            player.position.set(0, 1, 0);
+            scene.add(player);
+            
+            console.log('✅ Fallback player with professional animation system created!');
+        }
+        
+        function animatePlayer(deltaTime) {
+            if (!playerModel) return;
+            
+            // Pokud máme 3D model s animacemi, použít ho
+            if (playerModel.userData.animations && playerModel.userData.animationMixer) {
+                // Aktualizovat stav animace
+                let animationState = 'idle';
+                
+                if (player.position.y > 1.5) {
+                    animationState = 'jumping';
+                } else if (isMoving) {
+                    animationState = isRunning ? 'running' : 'walking';
+                }
+                
+                // Aktualizovat animaci podle stavu
+                updatePlayerAnimation(animationState);
+                
+            } else {
+                // Fallback animace pro procedurálního hráče
+                const animData = playerModel.userData;
+                if (!animData) return;
+                
+                // Update animation state
+                if (player.position.y > 1.5) {
+                    animData.animationState = 'jumping';
+                } else if (isMoving) {
+                    animData.animationState = isRunning ? 'running' : 'walking';
+                } else {
+                    animData.animationState = 'idle';
+                }
+                
+                // Simple animation
+                if (isMoving) {
+                    animData.walkCycle += deltaTime * 4;
+                    const walkAmount = Math.sin(animData.walkCycle) * 0.3;
+                    
+                    if (animData.leftArm && animData.rightArm) {
+                        animData.leftArm.rotation.z = walkAmount;
+                        animData.rightArm.rotation.z = -walkAmount;
+                        animData.leftLeg.rotation.x = walkAmount;
+                        animData.rightLeg.rotation.x = -walkAmount;
+                    }
+                } else {
+                    // Return to idle
+                    if (animData.leftArm && animData.rightArm) {
+                        animData.leftArm.rotation.z *= 0.9;
+                        animData.rightArm.rotation.z *= 0.9;
+                        animData.leftLeg.rotation.x *= 0.9;
+                        animData.rightLeg.rotation.x *= 0.9;
+                    }
+                }
+            }
+            
+            // Plynulá rotace hráče
+            const rotationDiff = targetRotation - playerRotation;
+            playerRotation += rotationDiff * 0.15;
+            player.rotation.y = playerRotation;
+        }
+        
+        function updateAnimationState() {
+            const animData = playerModel.userData;
+            
+            if (player.position.y > 1.5) {
+                animData.animationState = 'jumping';
+            } else if (isMoving) {
+                animData.animationState = isRunning ? 'running' : 'walking';
+            } else {
+                animData.animationState = 'idle';
+            }
+        }
+        
+        function animateIdle(deltaTime) {
+            const animData = playerModel.userData;
+            
+            // Lehké pohyby při idle (dýchání)
+            const breatheAmount = Math.sin(Date.now() * 0.001) * 0.02;
+            animData.body.position.y = 1.5 + breatheAmount;
+            animData.head.position.y = 3.5 + breatheAmount * 1.5;
+            
+            // Vrátit končetiny do klidové pozice
+            animateLimpsToIdle(animData);
+        }
+        
+        function animateWalking(deltaTime) {
+            const animData = playerModel.userData;
+            animData.walkCycle += deltaTime * 4; // Frekvence chůze
+            
+            // Profesionální chůzový cyklus
+            const walkPhase = animData.walkCycle;
+            const walkAmount = Math.sin(walkPhase);
+            const walkAmount2 = Math.sin(walkPhase + Math.PI);
+            
+            // Animace nohou - protifázový pohyb
+            animateLegs(animData, walkAmount, walkAmount2, animData.legSwingAmount, animData.legBendAmount);
+            
+            // Animace rukou - protifázový pohyb s ohýbáním loktů
+            animateArms(animData, walkAmount, walkAmount2, animData.armSwingAmount, animData.armBendAmount);
+            
+            // Pohyb těla nahoru/dolů (bobbing)
+            const bodyBob = Math.abs(Math.sin(walkPhase * 2)) * animData.bodyBobAmount;
+            animData.body.position.y = 1.5 + bodyBob;
+            animData.head.position.y = 3.5 + bodyBob;
+            
+            // Lehké naklánění do stran
+            const sideLean = Math.sin(walkPhase) * animData.sideLeanAmount;
+            animData.body.rotation.z = sideLean;
+        }
+        
+        function animateRunning(deltaTime) {
+            const animData = playerModel.userData;
+            animData.runCycle += deltaTime * 8; // Rychlejší frekvence běhu
+            
+            // Profesionální běžecký cyklus
+            const runPhase = animData.runCycle;
+            const runAmount = Math.sin(runPhase);
+            const runAmount2 = Math.sin(runPhase + Math.PI);
+            
+            // Dramatičtější animace nohou při běhu
+            animateLegs(animData, runAmount, runAmount2, animData.legSwingAmount * 1.5, animData.legBendAmount * 1.2);
+            
+            // Dramatičtější animace rukou při běhu
+            animateArms(animData, runAmount, runAmount2, animData.armSwingAmount * 1.8, animData.armBendAmount * 1.5);
+            
+            // Větší pohyb těla při běhu
+            const bodyBob = Math.abs(Math.sin(runPhase * 2)) * (animData.bodyBobAmount * 2);
+            animData.body.position.y = 1.5 + bodyBob;
+            animData.head.position.y = 3.5 + bodyBob;
+            
+            // Větší naklánění při běhu
+            const sideLean = Math.sin(runPhase) * (animData.sideLeanAmount * 1.5);
+            animData.body.rotation.z = sideLean;
+            
+            // Předklonění při běhu
+            animData.body.rotation.x = Math.sin(runPhase * 2) * 0.1;
+        }
+        
+        function animateJumping(deltaTime) {
+            const animData = playerModel.userData;
+            animData.jumpPhase += deltaTime * 3;
+            
+            // Animace skoku - ruce nahoru, nohy pokrčené
+            const jumpProgress = Math.min(1, Math.abs(player.position.y - 1) / 10);
+            
+            // Ruce natažené nahoru
+            animData.leftArm.rotation.x = -Math.PI / 3 * jumpProgress;
+            animData.rightArm.rotation.x = -Math.PI / 3 * jumpProgress;
+            
+            // Nohy pokrčené
+            animData.leftLeg.rotation.x = Math.PI / 6 * jumpProgress;
+            animData.rightLeg.rotation.x = Math.PI / 6 * jumpProgress;
+            
+            // Tělo mírně předkloněné
+            animData.body.rotation.x = -0.1 * jumpProgress;
+        }
+        
+        function animateLegs(animData, amount1, amount2, swingAmount, bendAmount) {
+            // Levá noha
+            animData.leftLeg.rotation.x = amount1 * swingAmount;
+            animData.leftLeg.rotation.z = Math.abs(amount1) * bendAmount * 0.5; // Ohýbání kolene
+            
+            // Pravá noha
+            animData.rightLeg.rotation.x = amount2 * swingAmount;
+            animData.rightLeg.rotation.z = Math.abs(amount2) * bendAmount * 0.5; // Ohýbání kolene
+            
+            // Boční pohyb nohou pro realističtější chůzi
+            const sideSwing = Math.sin(Date.now() * 0.008) * 0.05;
+            animData.leftLeg.position.x = -0.6 + sideSwing;
+            animData.rightLeg.position.x = 0.6 - sideSwing;
+        }
+        
+        function animateArms(animData, amount1, amount2, swingAmount, bendAmount) {
+            // Levá ruka - protifázový pohyb s ohýbáním lokte
+            animData.leftArm.rotation.x = amount2 * swingAmount;
+            animData.leftArm.rotation.z = Math.abs(amount2) * bendAmount; // Ohýbání lokte
+            
+            // Pravá ruka - protifázový pohyb s ohýbáním lokte
+            animData.rightArm.rotation.x = amount1 * swingAmount;
+            animData.rightArm.rotation.z = Math.abs(amount1) * bendAmount; // Ohýbání lokte
+            
+            // Lehký pohyb ramen nahoru/dolů
+            const shoulderBob = Math.sin(Date.now() * 0.006) * 0.05;
+            animData.leftArm.position.y = 2.2 + shoulderBob;
+            animData.rightArm.position.y = 2.2 + shoulderBob;
+        }
+        
+        function animateLimpsToIdle(animData) {
+            // Plynulý návrat končetin do klidové pozice
+            const lerpSpeed = 0.1;
+            
+            // Ruce do klidové pozice
+            animData.leftArm.rotation.x += (0.3 - animData.leftArm.rotation.x) * lerpSpeed;
+            animData.leftArm.rotation.z += (0 - animData.leftArm.rotation.z) * lerpSpeed;
+            
+            animData.rightArm.rotation.x += (-0.3 - animData.rightArm.rotation.x) * lerpSpeed;
+            animData.rightArm.rotation.z += (0 - animData.rightArm.rotation.z) * lerpSpeed;
+            
+            // Nohy do klidové pozice
+            animData.leftLeg.rotation.x += (0 - animData.leftLeg.rotation.x) * lerpSpeed;
+            animData.leftLeg.rotation.z += (0 - animData.leftLeg.rotation.z) * lerpSpeed;
+            
+            animData.rightLeg.rotation.x += (0 - animData.rightLeg.rotation.x) * lerpSpeed;
+            animData.rightLeg.rotation.z += (0 - animData.rightLeg.rotation.z) * lerpSpeed;
+            
+            // Tělo do klidové pozice
+            animData.body.rotation.x += (0 - animData.body.rotation.x) * lerpSpeed;
+            animData.body.rotation.z += (0 - animData.body.rotation.z) * lerpSpeed;
+            
+            // Pozice končetin do klidové pozice
+            animData.leftArm.position.x += (-1.2 - animData.leftArm.position.x) * lerpSpeed;
+            animData.rightArm.position.x += (1.2 - animData.rightArm.position.x) * lerpSpeed;
+            animData.leftLeg.position.x += (-0.6 - animData.leftLeg.position.x) * lerpSpeed;
+            animData.rightLeg.position.x += (0.6 - animData.rightLeg.position.x) * lerpSpeed;
+        }
+        
+        function createTree(x, z) {
+            const group = new THREE.Group();
+            
+            // Kmen
+            const trunkGeometry = new THREE.CylinderGeometry(0.5, 0.8, 4, 8);
+            const trunkMaterial = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
+            const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+            trunk.position.y = 2;
+            trunk.castShadow = true;
+            group.add(trunk);
+            
+            // Koruna
+            const leavesGeometry = new THREE.SphereGeometry(3, 8, 6);
+            const leavesMaterial = new THREE.MeshLambertMaterial({ color: 0x228B22 });
+            const leaves = new THREE.Mesh(leavesGeometry, leavesMaterial);
+            leaves.position.y = 5;
+            leaves.castShadow = true;
+            group.add(leaves);
+            
+            group.position.set(x, 0, z);
+            scene.add(group);
+        }
+        
+        function createBuildings() {
+            // Dům
+            const houseGeometry = new THREE.BoxGeometry(6, 4, 6);
+            const houseMaterial = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
+            const house = new THREE.Mesh(houseGeometry, houseMaterial);
+            house.position.set(15, 2, 15);
+            house.castShadow = true;
+            scene.add(house);
+            
+            // Střecha
+            const roofGeometry = new THREE.ConeGeometry(5, 3, 4);
+            const roofMaterial = new THREE.MeshLambertMaterial({ color: 0x8B0000 });
+            const roof = new THREE.Mesh(roofGeometry, roofMaterial);
+            roof.position.set(15, 5.5, 15);
+            roof.rotation.y = Math.PI / 4;
+            roof.castShadow = true;
+            scene.add(roof);
+        }
+        
+        function createNPCs() {
+            const npcs = [
+                { name: 'Oldřich', color: 0x4169E1, x: 5, z: 5 },
+                { name: 'Alžběta', color: 0xFF69B4, x: -5, z: 5 },
+                { name: 'Viktor', color: 0x8B0000, x: 10, z: -10 }
+            ];
+            
+            npcs.forEach(npc => {
+                const group = new THREE.Group();
+                
+                // Tělo
+                const bodyGeometry = new THREE.CylinderGeometry(0.4, 0.4, 1.5, 8);
+                const bodyMaterial = new THREE.MeshLambertMaterial({ color: npc.color });
+                const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+                body.position.y = 0.75;
+                body.castShadow = true;
+                group.add(body);
+                
+                // Hlava
+                const headGeometry = new THREE.SphereGeometry(0.3, 8, 8);
+                const headMaterial = new THREE.MeshLambertMaterial({ color: 0xFFDBAC });
+                const head = new THREE.Mesh(headGeometry, headMaterial);
+                head.position.y = 1.5;
+                head.castShadow = true;
+                group.add(head);
+                
+                // Přidat userData pro interakci
+                group.userData = {
+                    isNPC: true,
+                    name: npc.name,
+                    color: npc.color
+                };
+                
+                group.position.set(npc.x, 0, npc.z);
+                scene.add(group);
+                
+                console.log(`✅ NPC ${npc.name} created at (${npc.x}, 0, ${npc.z})`);
+            });
+        }
+        
+        function updateUI() {
+            // Bezpečná aktualizace UI
+            try {
+                const healthElement = document.getElementById('health');
+                if (healthElement) {
+                    healthElement.textContent = '100';
+                }
+                
+                const positionElement = document.getElementById('position');
+                if (positionElement && player && player.position) {
+                    positionElement.textContent = 
+                        `${player.position.x.toFixed(1)}, ${player.position.y.toFixed(1)}, ${player.position.z.toFixed(1)}`;
+                }
+                
+                // Přidat stav běhu
+                const speedText = isRunning ? 'Běh' : 'Chůze';
+                let speedElement = document.getElementById('speed');
+                if (!speedElement) {
+                    speedElement = document.createElement('p');
+                    speedElement.id = 'speed';
+                    speedElement.innerHTML = `<strong>Rychlost:</strong> <span id="speed-value">${speedText}</span>`;
+                    const infoElement = document.getElementById('info');
+                    if (infoElement) {
+                        infoElement.appendChild(speedElement);
+                    }
+                } else {
+                    const speedValueElement = document.getElementById('speed-value');
+                    if (speedValueElement) {
+                        speedValueElement.textContent = speedText;
+                    }
+                }
+            } catch (error) {
+                console.warn('⚠️ UI update error:', error);
+            }
+        }
+        
+        function setupControls() {
+            // Klávesnice
+            document.addEventListener('keydown', (event) => {
+                switch (event.code) {
+                    case 'KeyW': moveForward = true; break;
+                    case 'KeyS': moveBackward = true; break;
+                    case 'KeyA': moveLeft = true; break;
+                    case 'KeyD': moveRight = true; break;
+                    case 'ShiftLeft': isRunning = true; break;
+                    case 'Space':
+                        if (canJump) {
+                            velocity.y = 15; // Vyšší skok
+                            canJump = false;
+                        }
+                        break;
+                    case 'KeyE':
+                        console.log('🤝 Interakce s NPC');
+                        interactWithNPC();
+                        break;
+                    case 'KeyB':
+                        console.log('🏠 Stavění');
+                        showNotification('Stavění', 'Stavění zatím není implementováno');
+                        break;
+                    case 'KeyI':
+                        console.log('🎒 Inventář');
+                        showNotification('Inventář', 'Inventář zatím není implementován');
+                        break;
+                    case 'KeyR':
+                        console.log('🏃 Běh');
+                        isRunning = !isRunning;
+                        showNotification('Běh', isRunning ? 'Běh zapnut' : 'Běh vypnut');
+                        break;
+                }
+            });
+            
+            document.addEventListener('keyup', (event) => {
+                switch (event.code) {
+                    case 'KeyW': moveForward = false; break;
+                    case 'KeyS': moveBackward = false; break;
+                    case 'KeyA': moveLeft = false; break;
+                    case 'KeyD': moveRight = false; break;
+                    case 'ShiftLeft': isRunning = false; break;
+                }
+            });
+            
+            // Myš - TPS ovládání
+            document.addEventListener('mousemove', (event) => {
+                if (document.pointerLockElement === renderer.domElement) {
+                    mouseMovementX += event.movementX;
+                    mouseMovementY += event.movementY;
+                }
+            });
+            
+            // Pointer lock
+            renderer.domElement.addEventListener('click', () => {
+                renderer.domElement.requestPointerLock();
+            });
+            
+            // Window resize
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+        
+        function interactWithNPC() {
+            // Najdi nejbližší NPC
+            const npcs = scene.children.filter(child => child.userData && child.userData.isNPC);
+            let nearestNPC = null;
+            let nearestDistance = 5; // Maximální vzdálenost pro interakci
+            
+            npcs.forEach(npc => {
+                const distance = player.position.distanceTo(npc.position);
+                if (distance < nearestDistance) {
+                    nearestDistance = distance;
+                    nearestNPC = npc;
+                }
+            });
+            
+            if (nearestNPC) {
+                showNotification('Dialog', `Mluvíš s ${nearestNPC.userData.name}`);
+                console.log(`🗣️ Dialog s ${nearestNPC.userData.name}`);
+            } else {
+                showNotification('Interakce', 'Žádné NPC poblíž');
+            }
+        }
+        
+        function showNotification(title, message) {
+            console.log(`📢 ${title}: ${message}`);
+            // Zde by se zobrazovala notifikace v UI
+        }
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const time = performance.now();
+            const delta = (time - prevTime) / 1000;
+            
+            // Aplikovat pohyb pouze pokud hráč existuje
+            if (player && player.position) {
+                // Aktualizovat pohyb hráče
+                updatePlayerMovement();
+                
+                // Aktualizovat rotaci hráče
+                updatePlayerRotation();
+                
+                // Aktualizovat kameru
+                updateCameraOrbit();
+                
+                // Resetovat pohyb myši
+                mouseMovementX = 0;
+                mouseMovementY = 0;
+                
+                // Aktualizovat animace hráče
+                animatePlayer(delta);
+            } else {
+                // Pokud hráč neexistuje, statická kamera
+                camera.position.set(0, 10, 15);
+                camera.lookAt(0, 0, 0);
+            }
+            
+            // Aktualizovat animation mixer pro 3D modely
+            if (animationMixer) {
+                animationMixer.update(delta);
+            }
+            
+            // Aktualizovat UI
+            updateUI();
+            
+            // VŽDY POKAždÉ RENDER - BEZ PODMÍNEK
+            renderer.render(scene, camera);
+            
+            prevTime = time;
+        }
+        
+        function updatePlayerMovement() {
+            const speed = isRunning ? 30 : 15; // Rychlost běhu vs chůze
+            
+            velocity.x -= velocity.x * 10.0 * delta;
+            velocity.z -= velocity.z * 10.0 * delta;
+            
+            // Správné přiřazení směrů - W=dopředu, S=dozadu, A=doleva, D=doprava
+            direction.x = Number(moveRight) - Number(moveLeft);      // D=+1, A=-1
+            direction.z = Number(moveForward) - Number(moveBackward); // W=+1, S=-1
+            direction.normalize();
+            
+            // Aplikovat rychlost pohybu
+            const movementSpeed = speed * delta;
+            if (moveForward || moveBackward) velocity.z -= direction.z * movementSpeed;
+            if (moveLeft || moveRight) velocity.x -= direction.x * movementSpeed;
+            
+            // Gravitace a skoky
+            if (player.position.y > 1) {
+                velocity.y -= 25 * delta; // Silnější gravitace
+            } else {
+                velocity.y = 0;
+                canJump = true;
+            }
+            
+            // Získat směr pohybu podle kamery
+            const { forward, right } = getPlayerMovementDirection();
+            
+            // Aplikovat pohyb
+            const moveX = velocity.x * delta;
+            const moveZ = velocity.z * delta;
+            
+            // Diagnostika - logování pohybu
+            if (isMoving) {
+                console.log(`🎮 Pohyb: W=${moveForward}, S=${moveBackward}, A=${moveLeft}, D=${moveRight} | Směr: X=${direction.x.toFixed(2)}, Z=${direction.z.toFixed(2)} | Pozice: X=${player.position.x.toFixed(1)}, Z=${player.position.z.toFixed(1)}`);
+            }
+            
+            player.position.add(forward.multiplyScalar(moveZ));
+            player.position.add(right.multiplyScalar(moveX));
+            player.position.y += velocity.y * delta;
+            
+            // Detekovat pohyb pro animace
+            isMoving = Math.abs(moveX) > 0.01 || Math.abs(moveZ) > 0.01;
+            
+            // Udržet hráče nad terénem
+            if (player.position.y < 1) {
+                player.position.y = 1;
+                velocity.y = 0;
+            }
+            
+            // Hranice světa
+            const worldSize = 45;
+            player.position.x = Math.max(-worldSize, Math.min(worldSize, player.position.x));
+            player.position.z = Math.max(-worldSize, Math.min(worldSize, player.position.z));
+        }
+        
+        function updateUI() {
+            try {
+                document.getElementById('health').textContent = '100';
+                if (player && player.position) {
+                    document.getElementById('position').textContent = 
+                        `${player.position.x.toFixed(1)}, ${player.position.y.toFixed(1)}, ${player.position.z.toFixed(1)}`;
+                }
+            } catch (error) {
+                console.warn('UI update error:', error);
+            }
+        }
+        
+        // Start hry
+        init();
+        
+        console.log('🎮 Česká Vesnice - KONEČNÁ VERZE SPUŠTĚNA!');
+        console.log('👤 HRDINA JE OBROVSKÝ A BAREVNÝ - MUSÍ BÝT VIDITELNÝ!');
+    </script>
+</body>
+</html>

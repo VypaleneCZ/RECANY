@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Česká Vesnice: RPG Survival Building</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: Arial;
+            font-size: 14px;
+            background: rgba(0,0,0,0.7);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        #controls {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: white;
+            font-family: Arial;
+            font-size: 12px;
+            background: rgba(0,0,0,0.7);
+            padding: 10px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <h3>Česká Vesnice - Test Verze</h3>
+        <p>Rok: 1142 | Hráč: Jindřich z Lipé</p>
+        <p>Health: <span id="health">100</span>%</p>
+        <p>Position: <span id="position">0, 0, 0</span></p>
+    </div>
+    
+    <div id="controls">
+        <p><strong>Ovládání:</strong></p>
+        <p>WASD - Pohyb</p>
+        <p>Myš - Rotace kamery</p>
+        <p>Space - Skok</p>
+        <p>E - Interakce</p>
+        <p>B - Stavění</p>
+        <p>I - Inventář</p>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
+    <script>
+        // ZÁKLADNÍ THREE.JS SCÉNA
+        let scene, camera, renderer;
+        let player;
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+        let canJump = false;
+        let prevTime = performance.now();
+        let velocity = new THREE.Vector3();
+        let direction = new THREE.Vector3();
+        
+        // Inicializace
+        function init() {
+            console.log('🚀 Starting game initialization...');
+            
+            // SCÉNA
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            scene.fog = new THREE.Fog(0x87CEEB, 10, 100);
+            
+            // KAMERA
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 1000);
+            camera.position.set(0, 5, 10);
+            
+            // RENDERER
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+            
+            // OSVĚTLENÍ
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+            directionalLight.position.set(10, 20, 5);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.camera.left = -20;
+            directionalLight.shadow.camera.right = 20;
+            directionalLight.shadow.camera.top = 20;
+            directionalLight.shadow.camera.bottom = -20;
+            scene.add(directionalLight);
+            
+            // TERÉN
+            const terrainGeometry = new THREE.PlaneGeometry(100, 100);
+            const terrainMaterial = new THREE.MeshLambertMaterial({ color: 0x3a5f3a });
+            const terrain = new THREE.Mesh(terrainGeometry, terrainMaterial);
+            terrain.rotation.x = -Math.PI / 2;
+            terrain.receiveShadow = true;
+            scene.add(terrain);
+            
+            // HRDINA - GARANTOVANĚ VIDITELNÝ
+            createPlayer();
+            
+            // STROMY
+            for (let i = 0; i < 20; i++) {
+                createTree(
+                    (Math.random() - 0.5) * 50,
+                    (Math.random() - 0.5) * 50
+                );
+            }
+            
+            // BUDOVY
+            createBuildings();
+            
+            // NPC
+            createNPCs();
+            
+            // KONTROLY
+            setupControls();
+            
+            // START GAME LOOP
+            animate();
+            
+            console.log('✅ Game initialized successfully!');
+        }
+        
+        function createPlayer() {
+            console.log('👤 Creating player...');
+            
+            // Hlavní tělo hráče - OBROVSKÉ ČERVENÉ
+            const bodyGeometry = new THREE.BoxGeometry(2, 3, 2);
+            const bodyMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0xFF0000,
+                side: THREE.DoubleSide
+            });
+            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+            body.position.y = 1.5;
+            body.castShadow = true;
+            
+            // Hlava - OBROVSKÁ ZELENÁ
+            const headGeometry = new THREE.SphereGeometry(1, 16, 16);
+            const headMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0x00FF00,
+                side: THREE.DoubleSide
+            });
+            const head = new THREE.Mesh(headGeometry, headMaterial);
+            head.position.y = 3.5;
+            head.castShadow = true;
+            
+            // Ruce - MODRÉ
+            const armGeometry = new THREE.CylinderGeometry(0.3, 0.3, 2, 8);
+            const armMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0x0000FF,
+                side: THREE.DoubleSide
+            });
+            
+            const leftArm = new THREE.Mesh(armGeometry, armMaterial);
+            leftArm.position.set(-1.5, 2, 0);
+            leftArm.rotation.z = Math.PI / 6;
+            leftArm.castShadow = true;
+            
+            const rightArm = new THREE.Mesh(armGeometry, armMaterial);
+            rightArm.position.set(1.5, 2, 0);
+            rightArm.rotation.z = -Math.PI / 6;
+            rightArm.castShadow = true;
+            
+            // Nohy - ŽLUTÉ
+            const legGeometry = new THREE.CylinderGeometry(0.4, 0.4, 2, 8);
+            const legMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0xFFFF00,
+                side: THREE.DoubleSide
+            });
+            
+            const leftLeg = new THREE.Mesh(legGeometry, legMaterial);
+            leftLeg.position.set(-0.5, -1, 0);
+            leftLeg.castShadow = true;
+            
+            const rightLeg = new THREE.Mesh(legGeometry, legMaterial);
+            rightLeg.position.set(0.5, -1, 0);
+            rightLeg.castShadow = true;
+            
+            // Vytvořit group pro hráče
+            player = new THREE.Group();
+            player.add(body);
+            player.add(head);
+            player.add(leftArm);
+            player.add(rightArm);
+            player.add(leftLeg);
+            player.add(rightLeg);
+            
+            // Pozice hráče
+            player.position.set(0, 1, 0);
+            scene.add(player);
+            
+            // Přidat indikátor nad hlavou
+            const indicatorGeometry = new THREE.SphereGeometry(0.5, 8, 8);
+            const indicatorMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0xFF00FF,
+                side: THREE.DoubleSide
+            });
+            const indicator = new THREE.Mesh(indicatorGeometry, indicatorMaterial);
+            indicator.position.set(0, 5, 0);
+            player.add(indicator);
+            
+            console.log('✅ Player created with GIANT colored parts!');
+            console.log('📍 Player position:', player.position.x, player.position.y, player.position.z);
+        }
+        
+        function createTree(x, z) {
+            const group = new THREE.Group();
+            
+            // Kmen
+            const trunkGeometry = new THREE.CylinderGeometry(0.5, 0.8, 4, 8);
+            const trunkMaterial = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
+            const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+            trunk.position.y = 2;
+            trunk.castShadow = true;
+            group.add(trunk);
+            
+            // Koruna
+            const leavesGeometry = new THREE.SphereGeometry(3, 8, 6);
+            const leavesMaterial = new THREE.MeshLambertMaterial({ color: 0x228B22 });
+            const leaves = new THREE.Mesh(leavesGeometry, leavesMaterial);
+            leaves.position.y = 5;
+            leaves.castShadow = true;
+            group.add(leaves);
+            
+            group.position.set(x, 0, z);
+            scene.add(group);
+        }
+        
+        function createBuildings() {
+            // Dům
+            const houseGeometry = new THREE.BoxGeometry(6, 4, 6);
+            const houseMaterial = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
+            const house = new THREE.Mesh(houseGeometry, houseMaterial);
+            house.position.set(15, 2, 15);
+            house.castShadow = true;
+            scene.add(house);
+            
+            // Střecha
+            const roofGeometry = new THREE.ConeGeometry(5, 3, 4);
+            const roofMaterial = new THREE.MeshLambertMaterial({ color: 0x8B0000 });
+            const roof = new THREE.Mesh(roofGeometry, roofMaterial);
+            roof.position.set(15, 5.5, 15);
+            roof.rotation.y = Math.PI / 4;
+            roof.castShadow = true;
+            scene.add(roof);
+        }
+        
+        function createNPCs() {
+            const npcs = [
+                { name: 'Oldřich', color: 0x4169E1, x: 5, z: 5 },
+                { name: 'Alžběta', color: 0xFF69B4, x: -5, z: 5 },
+                { name: 'Viktor', color: 0x8B0000, x: 10, z: -10 }
+            ];
+            
+            npcs.forEach(npc => {
+                const group = new THREE.Group();
+                
+                // Tělo
+                const bodyGeometry = new THREE.CylinderGeometry(0.4, 0.4, 1.5, 8);
+                const bodyMaterial = new THREE.MeshLambertMaterial({ color: npc.color });
+                const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+                body.position.y = 0.75;
+                body.castShadow = true;
+                group.add(body);
+                
+                // Hlava
+                const headGeometry = new THREE.SphereGeometry(0.3, 8, 8);
+                const headMaterial = new THREE.MeshLambertMaterial({ color: 0xFFDBAC });
+                const head = new THREE.Mesh(headGeometry, headMaterial);
+                head.position.y = 1.5;
+                head.castShadow = true;
+                group.add(head);
+                
+                group.position.set(npc.x, 0, npc.z);
+                scene.add(group);
+                
+                console.log(`✅ NPC ${npc.name} created at (${npc.x}, 0, ${npc.z})`);
+            });
+        }
+        
+        function setupControls() {
+            // Klávesnice
+            document.addEventListener('keydown', (event) => {
+                switch (event.code) {
+                    case 'KeyW': moveForward = true; break;
+                    case 'KeyS': moveBackward = true; break;
+                    case 'KeyA': moveLeft = true; break;
+                    case 'KeyD': moveRight = true; break;
+                    case 'Space':
+                        if (canJump) velocity.y += 10;
+                        canJump = false;
+                        break;
+                    case 'KeyE':
+                        console.log('🤝 Interakce s NPC');
+                        break;
+                    case 'KeyB':
+                        console.log('🏠 Stavění');
+                        break;
+                    case 'KeyI':
+                        console.log('🎒 Inventář');
+                        break;
+                }
+            });
+            
+            document.addEventListener('keyup', (event) => {
+                switch (event.code) {
+                    case 'KeyW': moveForward = false; break;
+                    case 'KeyS': moveBackward = false; break;
+                    case 'KeyA': moveLeft = false; break;
+                    case 'KeyD': moveRight = false; break;
+                }
+            });
+            
+            // Myš
+            document.addEventListener('mousemove', (event) => {
+                if (document.pointerLockElement === renderer.domElement) {
+                    camera.rotation.y -= event.movementX * 0.002;
+                    camera.rotation.x -= event.movementY * 0.002;
+                    camera.rotation.x = Math.max(-Math.PI/3, Math.min(Math.PI/3, camera.rotation.x));
+                }
+            });
+            
+            // Pointer lock
+            renderer.domElement.addEventListener('click', () => {
+                renderer.domElement.requestPointerLock();
+            });
+            
+            // Window resize
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const time = performance.now();
+            const delta = (time - prevTime) / 1000;
+            
+            // Pohyb hráče
+            velocity.x -= velocity.x * 10.0 * delta;
+            velocity.z -= velocity.z * 10.0 * delta;
+            
+            direction.z = Number(moveForward) - Number(moveBackward);
+            direction.x = Number(moveRight) - Number(moveLeft);
+            direction.normalize();
+            
+            if (moveForward || moveBackward) velocity.z -= direction.z * 20.0 * delta;
+            if (moveLeft || moveRight) velocity.x -= direction.x * 20.0 * delta;
+            
+            // Gravitace a skoky
+            if (player.position.y > 1) {
+                velocity.y -= 20 * delta;
+            } else {
+                velocity.y = 0;
+                canJump = true;
+            }
+            
+            // Aplikovat pohyb
+            const moveX = -velocity.x * delta;
+            const moveZ = -velocity.z * delta;
+            
+            // Rotace pohledu hráče
+            player.rotation.y = camera.rotation.y;
+            
+            // Pohyb vpřed/vzad podle kamery
+            const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+            const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+            
+            forward.y = 0;
+            right.y = 0;
+            forward.normalize();
+            right.normalize();
+            
+            player.position.add(forward.multiplyScalar(moveZ));
+            player.position.add(right.multiplyScalar(moveX));
+            
+            player.position.y += velocity.y * delta;
+            
+            // Udržet hráče nad terénem
+            if (player.position.y < 1) {
+                player.position.y = 1;
+                velocity.y = 0;
+            }
+            
+            // Aktualizovat kameru
+            camera.position.set(
+                player.position.x,
+                player.position.y + 5,
+                player.position.z + 10
+            );
+            camera.lookAt(player.position);
+            
+            // Aktualizovat UI
+            updateUI();
+            
+            // Render
+            renderer.render(scene, camera);
+            
+            prevTime = time;
+        }
+        
+        function updateUI() {
+            document.getElementById('health').textContent = '100';
+            document.getElementById('position').textContent = 
+                `${player.position.x.toFixed(1)}, ${player.position.y.toFixed(1)}, ${player.position.z.toFixed(1)}`;
+        }
+        
+        // Start hry
+        init();
+        
+        console.log('🎮 Česká Vesnice - KONEČNÁ VERZE SPUŠTĚNA!');
+        console.log('👤 HRDINA JE OBROVSKÝ A BAREVNÝ - MUSÍ BÝT VIDITELNÝ!');
+    </script>
+</body>
+</html>
